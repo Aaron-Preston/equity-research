@@ -34,8 +34,15 @@ st.set_page_config(
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 FMP_KEY       = os.environ.get("FMP_API_KEY", "")
 FMP_BASE      = "https://financialmodelingprep.com/api/v3"
+# ── Cache & Storage ───────────────────────────────────────────────────────────
+# Works locally (filesystem) and on Streamlit Cloud (st.session_state fallback)
+
 CACHE_DIR     = Path.home() / ".equity_research_cache"
 CACHE_TTL_HRS = 24
+
+def _is_cloud():
+    """Detect if running on Streamlit Cloud."""
+    return os.environ.get("STREAMLIT_SHARING_MODE") or os.environ.get("HOME") == "/home/appuser"
 
 # ── Styling ───────────────────────────────────────────────────────────────────
 
@@ -256,6 +263,9 @@ def save_cache(sector, region, limit, companies):
 WATCHLIST_PATH = CACHE_DIR / "watchlist.json"
 
 def load_watchlist() -> list:
+    # On cloud use session state, locally use file
+    if _is_cloud():
+        return st.session_state.get("watchlist", [])
     CACHE_DIR.mkdir(exist_ok=True)
     if not WATCHLIST_PATH.exists(): return []
     try:
@@ -263,6 +273,9 @@ def load_watchlist() -> list:
     except Exception: return []
 
 def save_watchlist(watchlist: list):
+    if _is_cloud():
+        st.session_state["watchlist"] = watchlist
+        return
     CACHE_DIR.mkdir(exist_ok=True)
     WATCHLIST_PATH.write_text(json.dumps(watchlist, indent=2))
 
@@ -1325,13 +1338,20 @@ Be specific about sources and timing. Note what makes each signal genuinely new.
                                           max_tokens=1200,
                                           messages=[{"role":"user","content":sweep_prompt}])
                 raw_signals = "\n".join(b.text for b in response.content if b.type=="text")
+                # Trim to avoid token overflow in structure step
+                raw_signals = raw_signals[:2000]
                 ss.update(label="Sources swept ✓", state="complete")
             except Exception as e:
                 ss.update(label=f"Sweep failed: {str(e)[:60]}", state="error")
                 st.error(f"Sweep failed: {str(e)[:200]}")
                 st.stop()
 
-        time.sleep(3)
+        # Wait for Haiku rate limit window to reset
+        wait_box = st.empty()
+        for i in range(15, 0, -5):
+            wait_box.info(f"⏳ Pausing {i}s between steps...")
+            time.sleep(5)
+        wait_box.empty()
 
         # Step 2 — Structure
         with st.status(f"Structuring top {top_n} themes...") as st2:
